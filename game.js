@@ -368,10 +368,13 @@ function frame(now) {
 
 // ---------- 7) 서버(API) 연결 확인 ----------
 // Azure에 배포되면 /api/hello 가 응답합니다. 내 컴퓨터에서 파일만 열었을 때는 "로컬 모드"로 표시됩니다.
+// API 주소는 config.js 의 window.API_BASE 에서 가져옵니다.
+const API_BASE = String(window.API_BASE || '').replace(/\/+$/, '');
+
 async function checkServer() {
   const el = document.getElementById('status');
   try {
-    const res = await fetch('/api/hello');
+    const res = await fetch(API_BASE + '/api/hello');
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     el.textContent = '서버: 연결됨 ✓  (' + data.message + ')';
