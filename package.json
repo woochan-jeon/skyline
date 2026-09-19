@@ -1,0 +1,12 @@
+{
+  "name": "clean-sky-api",
+  "version": "1.0.0",
+  "description": "Clean Sky game API (Azure Functions, Node.js v4 programming model)",
+  "main": "src/functions/*.js",
+  "scripts": {
+    "start": "func start"
+  },
+  "dependencies": {
+    "@azure/functions": "^4.0.0"
+  }
+}
