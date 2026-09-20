@@ -32,7 +32,14 @@ function todaySeed() {
 const keys = {};
 let pointer = null; // 터치/마우스 드래그 위치
 
+// 닉네임 입력칸에 글자를 치는 중이면 게임 키(스페이스, 방향키, Enter)로 처리하지 않습니다.
+function isTyping(e) {
+  const t = e.target;
+  return !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA');
+}
+
 window.addEventListener('keydown', (e) => {
+  if (isTyping(e)) return;
   keys[e.code] = true;
   if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
     e.preventDefault(); // 스페이스/방향키로 페이지가 스크롤되는 것을 막음
@@ -92,6 +99,7 @@ function startGame() {
   game.bullets = [];
   game.enemies = [];
   game.particles = [];
+  onGameStart();
 }
 
 // ---------- 4) 업데이트 (1틱 = 1/60초, 고정 간격) ----------
@@ -209,7 +217,7 @@ function endGame() {
     game.best = game.score;
     try { localStorage.setItem('cleansky.best', String(game.best)); } catch (e) { /* 무시 */ }
   }
-  // TODO(2단계): 여기서 서버로 점수를 보냅니다.  POST /api/scores
+  onGameOver(); // 점수 등록 (아래 8번 섹션)
 }
 
 // 파티클은 눈에 보이는 효과일 뿐이라 Math.random을 써도 게임 결과에 영향이 없습니다.
@@ -385,9 +393,143 @@ async function checkServer() {
   }
 }
 
+// ---------- 8) 점수 등록 + 랭킹 ----------
+// 흐름: 게임오버 -> 닉네임이 있으면 자동으로 POST /api/scores -> 랭킹 새로고침(GET /api/leaderboard)
+// 화면에 글자를 넣을 때는 항상 textContent 를 씁니다. (닉네임에 HTML이 섞여 있어도 실행되지 않게 하는 기본 보안 습관)
+const nickInput = document.getElementById('nick');
+const submitBtn = document.getElementById('submitBtn');
+const submitMsg = document.getElementById('submitMsg');
+const boardEl = document.getElementById('board');
+const tabDaily = document.getElementById('tabDaily');
+const tabAll = document.getElementById('tabAll');
+
+let pending = null;        // 아직 등록하지 않은 마지막 게임 결과 { score, playSeconds, seed }
+let submitting = false;    // 등록 요청을 보내는 중인지 (중복 등록 방지)
+let boardPeriod = 'daily'; // 'daily' | 'all'
+
+try { nickInput.value = localStorage.getItem('cleansky.nick') || ''; } catch (e) { /* 무시 */ }
+
+function setMsg(text, kind) {
+  submitMsg.textContent = text;
+  submitMsg.className = kind || '';
+}
+
+function updateSubmitUi() {
+  submitBtn.disabled = !pending || submitting;
+}
+
+function onGameStart() {
+  pending = null;
+  updateSubmitUi();
+}
+
+function onGameOver() {
+  const playSeconds = Math.max(1, Math.ceil(game.tick / 60));
+  if (game.score < 10) {
+    pending = null;
+    setMsg('점수가 10점 이상이면 랭킹에 등록할 수 있어요.');
+    updateSubmitUi();
+    return;
+  }
+  pending = { score: game.score, playSeconds, seed: game.seed };
+  updateSubmitUi();
+  if (nickInput.value.trim()) {
+    submitScore();
+  } else {
+    setMsg('닉네임을 입력하고 "점수 등록"을 눌러주세요.');
+  }
+}
+
+async function submitScore() {
+  if (!pending || submitting) return;
+  const nickname = nickInput.value.trim();
+  if (!nickname) {
+    setMsg('닉네임을 입력해주세요.', 'err');
+    nickInput.focus();
+    return;
+  }
+  submitting = true;
+  updateSubmitUi();
+  setMsg('점수를 보내는 중...');
+  try {
+    const res = await fetch(API_BASE + '/api/scores', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nickname, ...pending }),
+    });
+    let data = null;
+    try { data = await res.json(); } catch (e) { /* 응답이 JSON이 아닐 수도 있음 */ }
+    if (!res.ok || !data || !data.ok) {
+      throw new Error((data && data.error) || '서버 오류 (' + res.status + ')');
+    }
+    setMsg('등록 완료 ✓', 'ok');
+    pending = null;
+    try { localStorage.setItem('cleansky.nick', nickname); } catch (e) { /* 무시 */ }
+    loadBoard();
+  } catch (err) {
+    const offline = err instanceof TypeError; // 네트워크 자체가 실패(주소 오류, CORS, 오프라인 등)
+    setMsg(offline ? '서버에 연결할 수 없어요.' : err.message, 'err');
+  } finally {
+    submitting = false;
+    updateSubmitUi();
+  }
+}
+
+function renderBoard(entries, emptyText) {
+  boardEl.textContent = '';
+  if (!entries || entries.length === 0) {
+    const li = document.createElement('li');
+    li.className = 'empty';
+    li.textContent = emptyText;
+    boardEl.appendChild(li);
+    return;
+  }
+  for (const e of entries) {
+    const li = document.createElement('li');
+    const num = document.createElement('span');
+    num.className = 'num';
+    num.textContent = String(e.rank);
+    const who = document.createElement('span');
+    who.className = 'who';
+    who.textContent = e.nickname;
+    const pts = document.createElement('span');
+    pts.className = 'pts';
+    pts.textContent = String(e.score);
+    li.append(num, who, pts);
+    boardEl.appendChild(li);
+  }
+}
+
+async function loadBoard() {
+  const query = boardPeriod === 'daily' ? '?period=daily&seed=' + game.seed : '?period=all';
+  try {
+    const res = await fetch(API_BASE + '/api/leaderboard' + query);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    renderBoard(data.entries, '아직 기록이 없어요. 첫 기록을 남겨보세요!');
+  } catch (err) {
+    renderBoard(null, '서버에 연결되면 랭킹이 보여요.');
+  }
+}
+
+function selectTab(period) {
+  boardPeriod = period;
+  tabDaily.classList.toggle('active', period === 'daily');
+  tabAll.classList.toggle('active', period === 'all');
+  loadBoard();
+}
+
+submitBtn.addEventListener('click', submitScore);
+tabDaily.addEventListener('click', () => selectTab('daily'));
+tabAll.addEventListener('click', () => selectTab('all'));
+nickInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitScore(); });
+// 입력칸을 누르는 순간 눌려 있던 게임 키 상태를 비웁니다. (키가 눌린 채로 남는 것 방지)
+nickInput.addEventListener('focus', () => { for (const k in keys) keys[k] = false; });
+
 // 디버깅용: 브라우저 콘솔에서 __game 을 입력하면 현재 상태를 볼 수 있습니다.
 window.__game = game;
 
 startGame();
 checkServer();
+loadBoard();
 requestAnimationFrame(frame);
